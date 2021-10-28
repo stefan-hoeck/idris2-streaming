@@ -3,20 +3,10 @@ module System.IO.Stream.Core
 import Control.MonadRec
 import Data.IORef
 import Data.Maybe
+import Data.MVar
 import System.Concurrency
 
 %default total
-
---------------------------------------------------------------------------------
---          Utilities
---------------------------------------------------------------------------------
-
-withMutex : Mutex -> IO a -> IO a
-withMutex m io = do
-  mutexAcquire m
-  res <- io
-  mutexRelease m
-  pure res
 
 --------------------------------------------------------------------------------
 --          Input Streams

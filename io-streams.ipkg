@@ -6,7 +6,9 @@ depends    = base    >= 0.5.1
            , tailrec >= 0.1.0
 
 modules    = Data.ByteString
+           , Data.MVar
            , System.IO.Stream
            , System.IO.Stream.Core
+           , System.IO.Stream.List
 
 sourcedir  = "src"
