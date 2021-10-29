@@ -3,6 +3,8 @@ module Data.ByteString
 
 import Data.Buffer
 import Data.So
+import System.File
+import System.File.Support
 
 %default total
 
@@ -30,6 +32,13 @@ prim__newBuffer : Bits32 -> PrimIO Buffer
          "RefC:setBufferByte"
          "node:lambda:(buf,offset,value)=>buf.writeUInt8(value, offset)"
 prim__setBits8 : Buffer -> (offset : Bits32) -> (val : Bits8) -> PrimIO Int
+
+%foreign support "idris2_readBufferData"
+         "node:lambda:(f,b,l,m) => require('fs').readSync(f.fd,b,l,m)"
+prim__readBufferData :  FilePtr
+                     -> Buffer
+                     -> (offset : Bits32)
+                     -> (maxbytes : Bits32) -> PrimIO Int
 
 --------------------------------------------------------------------------------
 --          API
@@ -90,84 +99,19 @@ bits8 :  (ix : Bits32)
       -> Bits8
 bits8 x (MkBS (MkBuf bf) o l) = prim__getBits8 bf (o + x)
 
--- 
--- -- Get the length of a string in bytes, rather than characters
--- export
--- %foreign "scheme:blodwen-stringbytelen"
---          "C:strlen, libc 6"
--- stringByteLength : String -> Int
--- 
--- %foreign "scheme:blodwen-buffer-setstring"
---          "RefC:setBufferString"
---          "node:lambda:(buf,offset,value)=>buf.write(value, offset,buf.length - offset, 'utf-8')"
--- prim__setString : Buffer -> (offset : Int) -> (val : String) -> PrimIO ()
--- 
--- export %inline
--- setString : HasIO io => Buffer -> (offset : Int) -> (val : String) -> io ()
--- setString buf offset val
---     = primIO (prim__setString buf offset val)
--- 
--- %foreign "scheme:blodwen-buffer-getstring"
---          "RefC:getBufferString"
---          "node:lambda:(buf,offset,len)=>buf.slice(offset, offset+len).toString('utf-8')"
--- prim__getString : Buffer -> (offset : Int) -> (len : Int) -> PrimIO String
--- 
--- export %inline
--- getString : HasIO io => Buffer -> (offset : Int) -> (len : Int) -> io String
--- getString buf offset len
---     = primIO (prim__getString buf offset len)
--- 
--- 
--- %foreign "scheme:blodwen-buffer-copydata"
---          "RefC:copyBuffer"
---          "node:lambda:(b1,o1,length,b2,o2)=>b1.copy(b2,o2,o1,o1+length)"
--- prim__copyData : (src : Buffer) -> (srcOffset, len : Int) ->
---                  (dst : Buffer) -> (dstOffset : Int) -> PrimIO ()
--- 
--- export
--- copyData : HasIO io => Buffer -> (srcOffset, len : Int) ->
---            (dst : Buffer) -> (dstOffset : Int) -> io ()
--- copyData src start len dest offset
---     = primIO (prim__copyData src start len dest offset)
--- 
--- export
--- resizeBuffer : HasIO io => Buffer -> Int -> io (Maybe Buffer)
--- resizeBuffer old newsize
---     = do Just buf <- newBuffer newsize
---               | Nothing => pure Nothing
---          -- If the new buffer is smaller than the old one, just copy what
---          -- fits
---          oldsize <- rawSize old
---          let len = if newsize < oldsize then newsize else oldsize
---          copyData old 0 len buf 0
---          pure (Just buf)
--- 
--- ||| Create a buffer containing the concatenated content from a
--- ||| list of buffers.
--- export
--- concatBuffers : HasIO io => List Buffer -> io (Maybe Buffer)
--- concatBuffers xs
---     = do let sizes = map prim__bufferSize xs
---          let (totalSize, revCumulative) = foldl scanSize (0,[]) sizes
---          let cumulative = reverse revCumulative
---          Just buf <- newBuffer totalSize
---               | Nothing => pure Nothing
---          traverse_ (\(b, size, watermark) => copyData b 0 size buf watermark) (zip3 xs sizes cumulative)
---          pure (Just buf)
---     where
---         scanSize : (Int, List Int) -> Int -> (Int, List Int)
---         scanSize (s, cs) x  = (s+x, s::cs)
--- 
--- ||| Split a buffer into two at a position.
--- export
--- splitBuffer : HasIO io => Buffer -> Int -> io (Maybe (Buffer, Buffer))
--- splitBuffer buf pos = do size <- rawSize buf
---                          if pos > 0 && pos < size
---                              then do Just first <- newBuffer pos
---                                         | Nothing => pure Nothing
---                                      Just second <- newBuffer (size - pos)
---                                         | Nothing => pure Nothing
---                                      copyData buf 0 pos first 0
---                                      copyData buf pos (size-pos) second 0
---                                      pure $ Just (first, second)
---                              else pure Nothing
+--------------------------------------------------------------------------------
+--          Reading and Writing from and to Files
+--------------------------------------------------------------------------------
+
+export
+readChunk : HasIO io => Bits32 -> File -> io (Either FileError ByteString)
+readChunk max (FHandle h) = do
+  Just buf <- newBuffer (cast max) | Nothing => pure (Left FileReadError)
+  read     <- primIO (prim__readBufferData h buf 0 max)
+  if read >= 0
+     then pure (Right $ MkBS (MkBuf buf) 0 (cast read))
+     else pure (Left FileReadError)
+
+export
+write : HasIO io => File -> ByteString -> io (Either FileError ())
+write h (MkBS (MkBuf buf) o l) = writeBufferData h buf (cast o) (cast l)
