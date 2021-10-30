@@ -6,17 +6,21 @@ import Control.Monad.Either
 import System
 import System.File
 
-tryOpen : Mode -> List String -> IO (List File)
-tryOpen _ []        = pure []
-tryOpen m (p :: ps) = do
-  Right h <- openFile p m
-    | Left err => putStrLn "Error when opening file \{p}: \{show err}"
-               >> tryOpen m ps
-  (h ::) <$> tryOpen m ps
+bytes : Bits32 -> String -> IO (Source FileError ByteString ByteString)
+bytes n s = do
+  Right h <- openFile s Read | Left err => pure (Fail err)
+  pure (bytes n h $> empty)
 
 main : IO ()
 main = do
   (_ :: fs) <- getArgs | _ => putStrLn "Missing arguments"
-  hs <- tryOpen Read fs
-  _  <- run (limit 10000000000) (foldMap (bytes 65536) hs) (writeBytes stdout)
-  traverse_ closeFile hs
+  res <- run
+           (limit 10000000000)
+           (Fan (fromList fs) (bytes 65536) (Pure empty))
+           (writeBytes stdout)
+
+  case res of
+    SinkFull             => putStrLn "sink overflow"
+    (SourceEmpty result) => pure ()
+    (Err error)          => putStrLn "Error: \{show error}"
+    NoMoreFuel           => putStrLn "running on empty"
