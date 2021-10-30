@@ -1,11 +1,8 @@
 module Stream.Source
 
-import Data.ByteString
 import Data.Colist
-import Data.Fuel
-import Data.Iterable
 import Data.SOP
-import System.File
+import Stream.Result
 
 %default total
 
@@ -22,16 +19,6 @@ data ParList : (err,res : Type) -> (vals : List Type) -> Type where
   (::) :  (src  : Source err val res)
        -> (srcs : ParList err res vals)
        -> ParList err res (val :: vals)
-
-||| Single step evaluation result of a `Source`.
-||| This can either be a new value (to be consumed
-||| by a sink), a final result signalling that the
-||| will produce no more values, or an error.
-public export
-data Result : (err,val,res : Type) -> Type where
-  Done  : (result : res) -> Result err val res
-  Error : (error : err)  -> Result err val res
-  Value : (value : val)  -> Result err val res
 
 ||| Potentially infinite effectful data source.
 |||
@@ -101,6 +88,12 @@ data Source : (err,val,res : Type) -> Type where
        -> (currentChild : Source err val2 val2)
        -> Source err val2 res
 
+  ||| Effectful, stateful source.
+  STIO :  (state   : st)
+       -> (fun     : st -> IO (Result err (st,val) res))
+       -> (cleanup : st -> IO ())
+       -> Source err val res
+
 export %inline
 Functor (Source err val) where
   map f sr = Bind sr (pure . Pure . f)
@@ -136,13 +129,14 @@ mutual
   ||| the given `Source`.
   export
   release : Source err val res -> IO ()
-  release (ST _ _)    = pure ()
-  release (Sys _ rel) = rel
-  release (Pure _)    = pure ()
-  release (Fail _)    = pure ()
-  release (Bind x _)  = release x
-  release (Par srcs)  = releaseList srcs
-  release (Fan p _ c) = release p >> release c
+  release (ST _ _)       = pure ()
+  release (STIO st _ cl) = cl st
+  release (Sys _ rel)    = rel
+  release (Pure _)       = pure ()
+  release (Fail _)       = pure ()
+  release (Bind x _)     = release x
+  release (Par srcs)     = releaseList srcs
+  release (Fan p _ c)    = release p >> release c
 
 mutual
   stepList :  ParList err res vals
@@ -172,6 +166,12 @@ mutual
     Done result       => pure $ Done result
     Error error       => pure $ Error error
     Value (state2, v) => pure $ Value (v, ST state2 fun)
+
+  step (STIO state fun cleanup) = do
+    Value (state2,v) <- fun state
+      | Done result       => pure $ Done result
+      | Error error       => pure $ Error error
+    pure $ Value (v, STIO state2 fun cleanup)
 
   step (Sys next release) = do
     Value v <- next
@@ -206,121 +206,3 @@ mutual
     pure $ Value (v2, Fan parent2 mkChild child2)
 
   step (Fail err) = pure (Error err)
-
---------------------------------------------------------------------------------
---          Sink
---------------------------------------------------------------------------------
-
-public export
-record Sink (a : Type) where
-  constructor MkSink
-  sink : a -> IO ()
-
-export
-filter : (a -> Bool) -> Sink a -> Sink a
-filter f (MkSink sink) = MkSink $ \va => when (f va) (sink va)
-
---------------------------------------------------------------------------------
---          Driver
---------------------------------------------------------------------------------
-
-public export
-data Res : (err, res : Type) -> Type where
-  SinkFull    : Res err res
-  SourceEmpty : (result : res) -> Res err res
-  Err         : (error : err) -> Res err res
-  NoMoreFuel  : Res err res
-
-drive :  Sink val
-      -> (v : Fuel)
-      -> Source err val res
-      -> IO (Step Smaller v (Source err val res) (Res err res))
-drive si (More x) src = do
-  Value (v,src2) <- step src
-    | Error err => pure (Done $ Err err)
-    | Done  res => pure (Done $ SourceEmpty res)
-  si.sink v $> Cont x (reflexive {rel = LTE}) src2
-drive si Dry      src = release src $> Done NoMoreFuel
-
-||| Connect a `Source` with a `Sink` an feed values
-||| from the source to the sink until one of the
-||| following situation occurs:
-|||
-|||   * The `Fuel` runs dry. The result will be `NoMoreFuel`.
-|||
-|||   * An error occured either in the `Sink` or the `Source`.
-|||     The result will hold the error that was thrown.
-|||
-|||   * The `Sink` is full. The result will be `SinkFull`.
-|||
-|||   * The `Source` is empty.  The result will be `SourceEmpty`.
-|||
-||| No matter the final result: All system resources will be
-||| properly released.
-export
-run : Fuel -> Source err val res -> Sink val -> IO (Res err res)
-run f so si = trSized (drive si) f so
-
---------------------------------------------------------------------------------
---          Pure Sources
---------------------------------------------------------------------------------
-
-export
-fromList : List a -> Source err a ()
-fromList xs = ST xs $ \case (h :: t) => Value (t,h)
-                            Nil      => Done ()
-
-export
-fromStream : Stream a -> Source err a ()
-fromStream xs = ST xs $ \(h :: t) => Value (t,h)
-
-export
-fromColist : Colist a -> Source err a ()
-fromColist xs = ST xs $ \case (h :: t) => Value (t,h)
-                              Nil      => Done ()
-
---------------------------------------------------------------------------------
---          Files
---------------------------------------------------------------------------------
-
-export
-chars : Bits32 -> File -> Source FileError String ()
-chars n h = Sys read (closeFile h)
-  where read : IO (Result FileError String ())
-        read = do
-          False   <- fEOF h | True => pure (Done ())
-          Right s <- fGetChars h (cast n) | Left err => pure (Error err)
-          pure (Value s)
-
-export
-bytes : Bits32 -> File -> Source FileError ByteString ()
-bytes n h = Sys read (closeFile h)
-  where read : IO (Result FileError ByteString ())
-        read = do
-          False   <- fEOF h | True => pure (Done ())
-          Right s <- readChunk n h | Left err => pure (Error err)
-          pure (Value s)
-
-export
-getLine : Source err String res
-getLine = Sys (Value <$> getLine) (pure ())
-
-export
-putStrLn : Sink String
-putStrLn = MkSink putStrLn
-
-export
-putStr : Sink String
-putStr = MkSink putStr
-
-export
-printLn : Show a => Sink a
-printLn = MkSink printLn
-
-export
-print : Show a => Sink a
-print = MkSink print
-
-export
-writeBytes : File -> Sink ByteString
-writeBytes h = MkSink (ignore . write h)

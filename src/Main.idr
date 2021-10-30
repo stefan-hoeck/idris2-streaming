@@ -1,8 +1,8 @@
-import Stream.Source
+import Stream
 
 import Data.ByteString
 import Data.Fuel
-import Control.Monad.Either
+
 import System
 import System.File
 

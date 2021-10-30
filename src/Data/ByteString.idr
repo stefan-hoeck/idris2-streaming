@@ -115,3 +115,24 @@ readChunk max (FHandle h) = do
 export
 write : HasIO io => File -> ByteString -> io (Either FileError ())
 write h (MkBS (MkBuf buf) o l) = writeBufferData h buf (cast o) (cast l)
+
+--------------------------------------------------------------------------------
+--          Utilities (Lots of stuff still missing)
+--------------------------------------------------------------------------------
+
+export
+splitAt : Bits32 -> ByteString -> (ByteString,ByteString)
+splitAt n (MkBS buf offset l) =
+  if n >= l
+     then (MkBS buf offset l, empty)
+     else (MkBS buf offset n, MkBS buf (offset + n) (l - n))
+
+export
+break : Bits8 -> ByteString -> (ByteString,ByteString)
+break b bs@(MkBS bf o l) = go 0
+  where go : Bits32 -> (ByteString,ByteString)
+        go n = if n < l
+                  then if prim__getBits8 bf.buf (o + n) == b
+                          then (MkBS bf o n, MkBS bf (o + n) (l - n))
+                          else go (assert_smaller n (n+1))
+                  else (bs,empty)

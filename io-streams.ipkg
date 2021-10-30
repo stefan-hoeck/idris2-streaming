@@ -10,7 +10,15 @@ executable = "stream"
 
 modules    = Data.ByteString
            , Data.MVar
+
+           , Stream
+           , Stream.Driver
+           , Stream.File
+           , Stream.Result
+           , Stream.Sink
            , Stream.Source
+           , Stream.Util
+
            , System.IO.Stream
            , System.IO.Stream.Core
            , System.IO.Stream.List
