@@ -239,7 +239,7 @@ drive si (More x) src = do
   Value (v,src2) <- step src
     | Error err => pure (Done $ Err err)
     | Done  res => pure (Done $ SourceEmpty res)
-  si.sink v $> Cont x refl src2
+  si.sink v $> Cont x (reflexive {rel = LTE}) src2
 drive si Dry      src = release src $> Done NoMoreFuel
 
 ||| Connect a `Source` with a `Sink` an feed values
