@@ -200,7 +200,7 @@ mutual
 
     Value (v,parent2) <- step parent
       | Error err        => pure $ Error err
-      | Done res         => pure $ Done res
+      | Done res         => pure $ Value (v2, Pure res)
 
     child2            <- mkChild v
     pure $ Value (v2, Fan parent2 mkChild child2)
