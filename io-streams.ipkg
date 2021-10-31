@@ -9,6 +9,8 @@ main       = Main
 executable = "stream"
 
 modules    = Data.ByteString
+           , Data.ByteString.Builder
+           , Data.ByteString.Internal
            , Data.MVar
 
            , Stream
