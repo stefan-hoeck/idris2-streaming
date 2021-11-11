@@ -2,7 +2,7 @@ module Stream.Result
 
 ||| Single step evaluation result of a `Source`.
 ||| This can either be a new value (to be consumed
-||| by a sink), a final result signalling that the
+||| by a sink), a final result signalling that the source
 ||| will produce no more values, or an error.
 public export
 data Result : (err,val : Type) -> Type where
