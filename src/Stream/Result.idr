@@ -5,88 +5,88 @@ module Stream.Result
 ||| by a sink), a final result signalling that the
 ||| will produce no more values, or an error.
 public export
-data Result : (err,val,res : Type) -> Type where
-  Done  : (result : res) -> Result err val res
-  Error : (error : err)  -> Result err val res
-  Value : (value : val)  -> Result err val res
+data Result : (err,val : Type) -> Type where
+  Done  : (result : val) -> Result err val
+  Error : (error : err)  -> Result err val
+  Value : (value : val)  -> Result err val
 
 public export
 fold :  Lazy (err -> x)
      -> Lazy (val -> x)
-     -> Lazy (res -> x)
-     -> Result err val res
+     -> Result err val
      -> x
-fold _ g _  (Value value) = g value
-fold _ _ h (Done result)  = h result
-fold f _ _  (Error error) = f error
+fold _ g  (Value value) = g value
+fold _ g  (Done result) = g result
+fold f _  (Error error) = f error
 
 public export
 mapRes :  Lazy (err -> err2)
        -> Lazy (val -> val2)
-       -> Lazy (res -> res2)
-       -> Result err val res
-       -> Result err2 val2 res2
-mapRes _ g _ (Value value) = Value $ g value
-mapRes _ _ h (Done result) = Done  $ h result
-mapRes f _ _ (Error error) = Error $ f error
+       -> Result err val
+       -> Result err2 val2
+mapRes _ g (Value value) = Value $ g value
+mapRes _ g (Done result) = Done $ g result
+mapRes f _ (Error error) = Error $ f error
 
 public export
 traverseRes :  Applicative f
             => Lazy (err -> f err2)
             -> Lazy (val -> f val2)
-            -> Lazy (res -> f res2)
-            -> Result err val res
-            -> f (Result err2 val2 res2)
-traverseRes _ h _ (Value value) = Value <$> h value
-traverseRes _ _ i (Done result) = Done  <$> i result
-traverseRes g _ _ (Error error) = Error <$> g error
+            -> Result err val
+            -> f (Result err2 val2)
+traverseRes _ h (Value value) = Value <$> h value
+traverseRes _ h (Done result) = Done <$> h result
+traverseRes g _ (Error error) = Error <$> g error
 
 --------------------------------------------------------------------------------
 --          Interfaces
 --------------------------------------------------------------------------------
 
 public export
-Eq err => Eq val => Eq res => Eq (Result err val res) where
+Eq err => Eq val => Eq (Result err val) where
   Value x == Value y = x == y 
-  Done  x == Done  y = x == y 
+  Done  x == Done  y = x == y
   Error x == Error y = x == y 
   _       == _       = False
 
 export
-Show err => Show val => Show res => Show (Result err val res) where
+Show err => Show val => Show (Result err val) where
   showPrec p (Value x) = showCon p "Value" $ showArg x
-  showPrec p (Done x)  = showCon p "Done"  $ showArg x
+  showPrec p (Done x)  = showCon p "Done" $ showArg x
   showPrec p (Error x) = showCon p "Error" $ showArg x
 
 export %inline
-Functor (Result err val) where
-  map f = mapRes id id f
+Functor (Result err) where
+  map f = mapRes id f
 
 export
-Foldable (Result err val) where
-  foldr f acc (Done res) = f res acc
-  foldr _ acc _          = acc
+Foldable (Result err) where
+  foldr f acc (Value val) = f val acc
+  foldr f acc (Done val)  = f val acc
+  foldr _ acc _           = acc
 
-  foldl f acc (Done res) = f acc res
-  foldl _ acc _          = acc
+  foldl f acc (Value val) = f acc val
+  foldl f acc (Done val)  = f acc val
+  foldl _ acc _           = acc
 
-  foldMap f (Done res) = f res
-  foldMap _ _          = neutral
+  foldMap f (Value val) = f val
+  foldMap f (Done val)  = f val
+  foldMap _ _           = neutral
 
 export %inline
-Traversable (Result err val) where
-  traverse f = traverseRes pure pure f
+Traversable (Result err) where
+  traverse f = traverseRes pure f
 
 export %inline
-Bifunctor (Result err) where
-  bimap f g = mapRes id f g
+Bifunctor Result where
+  bimap f g = mapRes f g
 
 export
-Bifoldable (Result err) where
-  bifoldr f g acc (Done  res) = g res acc
-  bifoldr f g acc (Value res) = f res acc
-  bifoldr _ _ acc (Error _)   = acc
+Bifoldable Result where
+  bifoldr _ g acc (Done val)  = g val acc
+  bifoldr _ g acc (Value val) = g val acc
+  bifoldr f _ acc (Error err) = f err acc
 
 export %inline
-Bitraversable (Result err) where
-  bitraverse f g = traverseRes pure f g
+Bitraversable Result where
+  bitraverse f g = traverseRes f g
