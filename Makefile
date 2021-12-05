@@ -1,6 +1,6 @@
 export IDRIS2 ?= idris2
 
-lib_pkg = io-streams.ipkg
+lib_pkg = streaming.ipkg
 
 .PHONY: all
 all: lib
