@@ -1,3 +1,3 @@
-# idris2-io-streams: An IO streaming library for Idris2
+# idris2-streaming: A streaming library for Idris2
 
 This is work in progress. Please come back later.
