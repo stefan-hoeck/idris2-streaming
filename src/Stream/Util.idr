@@ -1,150 +1,236 @@
 module Stream.Util
 
--- import Control.MonadRec
--- import Data.ByteString
--- import Data.Colist
--- import Stream.Driver
--- import Stream.Result
--- import Stream.Source
--- 
--- --------------------------------------------------------------------------------
--- --          Pure Sources
--- --------------------------------------------------------------------------------
--- 
--- export
--- fromList : List a -> Source err a ()
--- fromList xs = ST xs $ \case (h :: t) => Value (t,h)
---                             Nil      => Done ()
--- 
--- export
--- fromStream : Stream a -> Source err a res
--- fromStream xs = ST xs $ \(h :: t) => Value (t,h)
--- 
--- export
--- fromColist : Colist a -> Source err a ()
--- fromColist xs = ST xs $ \case (h :: t) => Value (t,h)
---                               Nil      => Done ()
--- 
--- ||| Emits the given value `n` times.
--- export
--- replicate : (n : Nat) -> a -> Source err a ()
--- replicate n va = ST n $ \case S k => Value (k,va)
---                               0   => Done ()
--- 
--- ||| Emits the given value eternally
--- export
--- repeat : a -> Source err a res
--- repeat = ST () . const . Value . ((),)
--- 
--- ||| Generates the sequence (ini, f ini, f $ f ini, ...)
--- export
--- iterate : (fun : a -> a) -> (ini : a) -> Source err a res
--- iterate f ini = ST ini $ \va => Value (f va, va)
--- 
--- export
--- unfold : (s -> (s,a)) -> s -> Source err a res
--- unfold f ini = ST ini (Value . f)
--- 
--- --------------------------------------------------------------------------------
--- --          Source Transformers
--- --------------------------------------------------------------------------------
--- 
--- ||| Stateful `Source` transformer. This is used to accumulate a
--- ||| (finite!) number of values emitted by a `Source` on each evaluation step,
--- ||| limit the number of values a source produces, or interleave the
--- ||| values emitted by two different source.
--- |||
--- ||| This function is *very* general and can be used to implement
--- ||| all kinds of source transformers. If you don't want to accumulate
--- ||| or drop values, consider using `transformRes` instead.
--- export
--- transformST :  (fun :  (state, Source e v r)
---                     -> IO (Result e2 ((state,Source e v r), v2) r2))
---             -> (ini :  state)
---             -> (src :  Source e v r)
---             -> Source e2 v2 r2
--- transformST fun ini src = STIO (ini,src) fun (release . snd)
--- 
--- ||| Stateless `Source` transformer.
--- export
--- transform :  (fun :  Source e v r -> IO (Result e2 (Source e v r, v2) r2))
---           -> (src :  Source e v r)
---           -> Source e2 v2 r2
--- transform fun = transformST go () 
---   where go : ((), Source e v r) -> IO (Result e2 (((),Source e v r), v2) r2)
---         go (_,src) = do
---           Value (src2,vv2) <- fun src
---             | Done  res => pure (Done res)
---             | Error err => pure (Error err)
---           pure $ Value (((),src2),vv2)
--- 
--- export
--- transformRes :  (onVal : state -> v -> IO (Result e2 (state, v2) r2))
---              -> (onErr : state -> e -> IO e2)
---              -> (onRes : state -> r -> IO r2)
---              -> (ini :  state)
---              -> (src :  Source e v r)
---              -> Source e2 v2 r2
--- transformRes onVal onErr onRes = transformST $ \(st,src) => do
---   Value (vv, src2) <- step src
---     | Done  res => Done  <$> onRes st res
---     | Error err => Error <$> onErr st err
--- 
---   Value (st2,vv2) <- onVal st vv
---     | Done res  => release src2 $> Done res
---     | Error err => release src2 $> Error err
---   pure $ Value ((st2, src2),vv2)
--- 
--- ||| Emit the first `n` values from the given `Source`.
--- export
--- take : (n : Nat) -> Source err val res -> Source err val ()
--- take = transformRes go (\_,e => pure e) (\_,_ => pure ())
---   where go : Nat -> val -> IO (Result err (Nat,val) ())
---         go (S k) x = pure $ Value (k,x)
---         go 0     _ = pure $ Done ()
--- 
--- ||| Emit values until `p` returns `False`.
--- export
--- takeWhile : (p : val -> Bool) -> Source err val res -> Source err val ()
--- takeWhile p = transformRes go (\_,e => pure e) (\_,_ => pure ()) ()
---   where go : () -> val -> IO (Result err ((),val) ())
---         go _ x = pure $ if p x then Value ((),x) else Done ()
--- 
--- ||| Group emitted values in chunks of size `n`.
--- ||| The final list might be shorter than `n` elements.
--- export
--- chunks : Nat -> Source err val res -> Source err (List val) res
--- chunks n = transform go
---   where stp :  (n : Nat)
---             -> (Source err val res, List val)
---             -> IO $ Step Smaller n
---                       (Source err val res, List val)
---                       (Result err (Source err val res, List val) res)
---         stp 0     (src,vs) = pure . Done $ Value (src, reverse vs)
---         stp (S k) (src,vs) = do
---           Value (v,src2) <- step src
---             | Error err => pure . Done $ Error err
---             | Done  res => case vs of
---                 Nil => pure . Done $ Done res
---                 _   => pure . Done $ Value (Pure res, reverse vs)
---           pure $ Cont k (reflexive {rel = LTE}) (src2, v::vs)
--- 
---         go :  Source err val res
---            -> IO (Result err (Source err val res, List val) res)
---         go src = trSized stp n (src,Nil)
--- 
--- export
--- lines :  (maxNrOfChunks  : Nat)
---       -> (chunksExceeded : err)
---       -> Source err ByteString res
---       -> Source err ByteString res
--- lines n ce = transformST go empty
---   where stp :  (n : Nat)
---             -> (Source err val res, List ByteString)
---             -> IO $ Step Smaller n
---                       (Source err val res, List ByteString)
---                       (Result err ((ByteString,Source err val res), ByteString) res)
--- 
---         go :  (ByteString, Source err val res)
---            -> IO (Result err ((ByteString,Source err val res), ByteString) res)
---         go (bs,src) = trSized stp n (src,[bs])
+import Data.Colist
+import Data.SnocList
+import Stream.Internal
+
+public export
+data Of : (v,r : Type) -> Type where
+  MkOf : (val : v) -> Of v v
+
+public export
+fromOf : Of a b -> a
+fromOf (MkOf val) = val
+
+--------------------------------------------------------------------------------
+--          Producers
+--------------------------------------------------------------------------------
+
+export %inline
+yield : a -> Stream (Of a) m a
+yield = yields . MkOf
+
+export
+list : List a -> Stream (Of a) m ()
+list []        = pure ()
+list (x :: xs) = yield x >> list xs
+
+export
+stream : Stream a -> Stream (Of a) m Void
+stream (x :: y) = yield x >> stream y
+
+export
+colist : Colist a -> Stream (Of a) m ()
+colist []       = pure ()
+colist (x :: y) = yield x >> colist y
+
+||| Generates the sequence (ini, f ini, f $ f ini, ...)
+export
+iterate : (fun : a -> a) -> (ini : a) -> Stream (Of a) m Void
+iterate f ini = yield ini >> iterate f (f ini)
+
+export
+generate : (s -> (s,a)) -> s -> Stream (Of a) m Void
+generate f ini = let (vs,va) = f ini in yield va >> generate f vs
+
+export
+tillRight : m (Either a r) -> Stream (Of a) m r
+tillRight x = lift x >>= next
+  where next : Either a r -> Stream (Of a) m r
+        next (Left v)  = yield v >> tillRight x
+        next (Right r) = pure r
+
+--------------------------------------------------------------------------------
+--          Consuming Streams
+--------------------------------------------------------------------------------
+
+export
+mapM_ : (a -> m x) -> Stream (Of a) m r -> Stream Empty m r
+mapM_ f y = case toView y of
+  VBind (P val)      (Delay w) => pure val >>= \v => mapM_ f (w v)
+  VBind (F $ MkOf v) (Delay w) => lift (f v) >> mapM_ f (w v)
+  VBind (M act)      (Delay w) => lift act >>= \v => mapM_ f (w v)
+  VLift (P val)                => pure val
+  VLift (F $ MkOf v)           => lift (f v) $> v
+  VLift (M act)                => lift act
+
+export %inline
+effects : Applicative m => Stream (Of a) m r -> Stream Empty m r
+effects = mapM_ (const $ pure ())
+
+--------------------------------------------------------------------------------
+--          Folds
+--------------------------------------------------------------------------------
+
+export
+fold :  (x -> a -> x)
+     -> x
+     -> (x -> b)
+     -> Stream (Of a) m r
+     -> Stream Empty m (b,r)
+fold step ini done x = case toView x of
+  VBind (P val)      (Delay z) => pure val >>= \v => fold step ini done (z v)
+  VBind (F $ MkOf v) (Delay z) => pure () >> fold step (step ini v) done (z v)
+  VBind (M act)      (Delay z) => lift act >>= \v => fold step ini done (z v)
+  VLift (P val)                => pure (done ini, val)
+  VLift (F $ MkOf v)           => pure (done $ step ini v, v)
+  VLift (M act)                => (done ini,) <$> lift act
+
+export %inline
+foldMap : Monoid mo => (a -> mo) -> Stream (Of a) m r -> Stream Empty m (mo,r)
+foldMap f = fold (\vmo,va => vmo <+> f va) neutral id
+
+export %inline
+sum : Num a => Stream (Of a) m r -> Stream Empty m (a,r)
+sum = fold (+) 0 id
+
+export %inline
+product : Num a => Stream (Of a) m r -> Stream Empty m (a,r)
+product = fold (*) 0 id
+
+export %inline
+first : Stream (Of a) m r -> Stream Empty m (Maybe a,r)
+first = fold (\acc,va => acc <|> Just va) Nothing id
+
+export %inline
+last : Stream (Of a) m r -> Stream Empty m (Maybe a,r)
+last = fold (\_,va => Just va) Nothing id
+
+export %inline
+minimum : Ord a => Stream (Of a) m r -> Stream Empty m (Maybe a,r)
+minimum = fold (\acc,va => map (min va) acc <|> Just va) Nothing id
+
+export %inline
+maximum : Ord a => Stream (Of a) m r -> Stream Empty m (Maybe a,r)
+maximum = fold (\acc,va => map (max va) acc <|> Just va) Nothing id
+
+export %inline
+all : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m (Bool,r)
+all p = fold (\acc,va => acc && p va) True id
+
+export %inline
+any : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m (Bool,r)
+any p = fold (\acc,va => acc || p va) False id
+
+export %inline
+elem : Eq a => a -> Stream (Of a) m r -> Stream Empty m (Bool,r)
+elem va = any (va ==) 
+
+export %inline
+toSnocList : Stream (Of a) m r -> Stream Empty m (SnocList a, r)
+toSnocList = fold (:<) Lin id
+
+export %inline
+toList : Stream (Of a) m r -> Stream Empty m (List a, r)
+toList = map (\(sx,vr) => (sx <>> Nil, vr)) . toSnocList
+
+export
+foldM :  (x -> a -> m x)
+      -> m x
+      -> (x -> m b)
+      -> Stream (Of a) m r
+      -> Stream Empty m (b,r)
+foldM step ini done x = case toView x of
+  VBind (F $ MkOf v) (Delay z) => do
+    vx <- lift ini
+    foldM step (step vx v) done (z v)
+
+  VBind (P val)      (Delay z) => pure val >>= \v => foldM step ini done (z v)
+  VBind (M act)      (Delay z) => lift act >>= \v => foldM step ini done (z v)
+
+  VLift (P val)        => do
+    vx <- lift ini
+    vb <- lift (done vx)
+    pure (vb, val)
+
+  VLift (F $ MkOf v)   => do
+    vx  <- lift ini
+    vx2 <- lift (step vx v)
+    vb  <- lift (done vx2)
+    pure (vb,v)
+
+  VLift (M act)        => do
+    vr <- lift act
+    vx <- lift ini
+    vb <- lift (done vx)
+    pure (vb, vr)
+
+--------------------------------------------------------------------------------
+--          Filters and Stream Transformers
+--------------------------------------------------------------------------------
+
+export
+for : Stream (Of a) m r -> (a -> Stream f m x) -> Stream f m r
+for str fun = case toView str of
+  VBind (P val)       (Delay z) => pure val >>= \v => for (z v) fun
+  VBind (F (MkOf va)) (Delay z) => fun va >> for (z va) fun
+  VBind (M act)       (Delay z) => lift act >>= \v => for (z v) fun
+  VLift (P val)                 => pure val
+  VLift (F (MkOf va))           => fun va $> va
+  VLift (M act)                 => lift act
+
+export
+mapVals : (a -> b) -> Stream (Of a) m r -> Stream (Of b) m r
+mapVals f str = for str (yield . f)
+
+export
+drain : Stream (Of a) m r -> Stream (Of a) m r
+drain str = for str (\_ => pure ())
+
+export %inline
+with_ : Stream (Of a) m r -> (a -> f x) -> Stream f m r
+with_ str fun = for str (yields . fun)
+
+export %inline
+subst : (a -> f x) -> Stream (Of a) m r -> Stream f m r
+subst fun str = for str (yields . fun)
+
+export
+filter : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
+filter p x = case toView x of
+  VBind (F $ MkOf val) (Delay z) =>
+    if p val
+       then yield val >>= \v => filter p (z v)
+       else pure ()   >>   filter p (z val)
+  VBind (P val) (Delay z) => pure val >>= \v => filter p (z v)
+  VBind (M act) (Delay z) => lift act >>= \v => filter p (z v)
+  VLift (P val)           => pure val
+  VLift (F $ MkOf v)      => if p v then yield v else pure v
+  VLift (M act)           => lift act
+
+export
+span :  (a -> Bool)
+     -> Stream (Of a) m r 
+     -> Stream (Of a) m (Stream (Of a) m r)
+span p x = case toView x of
+  VBind (F $ MkOf val) (Delay z) =>
+    if p val
+       then pure ()   >> pure (z val)
+       else yield val >>= \v => span p (z v)
+  VBind (P val) (Delay z) => pure val >>= \v => span p (z v)
+  VBind (M act) (Delay z) => lift act >>= \v => span p (z v)
+  VLift (P val)           => pure (pure val)
+  VLift (F $ MkOf v)      => pure $ if p v then yield v else pure v
+  VLift (M act)           => pure $ lift act
+
+export
+takeWhile : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m ()
+takeWhile p = ignore . span p
+
+export
+dropWhile : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
+dropWhile p str = drain (span p str) >>= id
+
+export
+drop : Nat -> Stream (Of a) m r -> Stream (Of a) m r
+drop n str = drain (splitsAt n str) >>= id
