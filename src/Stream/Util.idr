@@ -88,6 +88,14 @@ fold step ini done x = case toView x of
   VM act           => (done ini,) <$> lift act
 
 export %inline
+fold_ :  (x -> a -> x)
+      -> x
+      -> (x -> b)
+      -> Stream (Of a) m r
+      -> Stream Empty m b
+fold_ step ini done = map fst . fold step ini done
+
+export %inline
 foldMap : Monoid mo => (a -> mo) -> Stream (Of a) m r -> Stream Empty m (mo,r)
 foldMap f = fold (\vmo,va => vmo <+> f va) neutral id
 
