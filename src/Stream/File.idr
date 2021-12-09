@@ -13,6 +13,17 @@ chars n h = tillRight $ do
   pure (Left s)
 
 export
+lines : HasIO io => File -> Stream (Of String) io (Maybe FileError)
+lines h = tillRight $ do
+  False <- fEOF h | True => pure (Right Nothing)
+  Right s <- fGetLine h | Left err => pure (Right $ Just err)
+  pure (Left s)
+
+export
+stdinLn : HasIO io => Stream (Of String) io r
+stdinLn = tillRight $ Left <$> getLine
+
+export
 bytes :  HasIO io
       => Bits32
       -> File
@@ -22,22 +33,17 @@ bytes n h = tillRight $ do
   Right s <- readChunk n h | Left err => pure (Right $ Just err)
   pure (Left s)
 
--- export
--- putStrLn : Sink String
--- putStrLn = MkSink putStrLn
--- 
--- export
--- putStr : Sink String
--- putStr = MkSink putStr
--- 
--- export
--- printLn : Show a => Sink a
--- printLn = MkSink printLn
--- 
--- export
--- print : Show a => Sink a
--- print = MkSink print
--- 
--- export
--- writeBytes : File -> Sink ByteString
--- writeBytes h = MkSink (ignore . write h)
+export
+stdoutLn : HasIO io => Stream (Of String) io r -> Stream Empty io r
+stdoutLn = mapM_ putStrLn
+
+export
+printLn : HasIO io => Show a => Stream (Of a) io r -> Stream Empty io r
+printLn = mapM_ printLn
+
+export
+writeBytes :  HasIO io
+           => File
+           -> Stream (Of ByteString) io r
+           -> Stream Empty io r
+writeBytes = mapM_ . write

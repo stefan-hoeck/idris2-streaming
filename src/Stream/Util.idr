@@ -99,6 +99,14 @@ product : Num a => Stream (Of a) m r -> Stream Empty m (a,r)
 product = fold (*) 0 id
 
 export %inline
+length : Stream (Of a) m r -> Stream Empty m (Nat,r)
+length = fold (\x,_ => S x) 0 id
+
+export %inline
+count : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m (Nat,r)
+count p = fold (\x,va => if p va then S x else x) 0 id
+
+export %inline
 first : Stream (Of a) m r -> Stream Empty m (Maybe a,r)
 first = fold (\acc,va => acc <|> Just va) Nothing id
 
@@ -165,6 +173,20 @@ foldM step ini done x = case toView x of
     vb <- lift (done vx)
     pure (vb, vr)
 
+export
+scan :  (x -> a -> x)
+     -> x
+     -> (x -> b)
+     -> Stream (Of a) m r
+     -> Stream (Of b) m r
+scan step ini done x = case toView x of
+  BindP val      z => pure val >>= \v => scan step ini done (z v)
+  BindF (MkOf v) z => yield (done ini) >>= \_ => scan step (step ini v) done (z v)
+  BindM act      z => lift act >>= \v => scan step ini done (z v)
+  VP val           => pure val
+  VF (MkOf v)      => yield (done $ step ini v) $> v
+  VM act           => lift act
+
 --------------------------------------------------------------------------------
 --          Filters and Stream Transformers
 --------------------------------------------------------------------------------
@@ -182,6 +204,10 @@ for str fun = case toView str of
 export
 mapVals : (a -> b) -> Stream (Of a) m r -> Stream (Of b) m r
 mapVals f str = for str (yield . f)
+
+export
+mapValsM : (a -> m b) -> Stream (Of a) m r -> Stream (Of b) m r
+mapValsM f str = for str $ \va => lift (f va) >>= yield
 
 export
 drain : Stream (Of a) m r -> Stream (Of a) m r
@@ -209,6 +235,20 @@ filter p x = case toView x of
   VM act         => lift act
 
 export
+mapMaybe : (a -> Maybe b) -> Stream (Of a) m r -> Stream (Of b) m r
+mapMaybe f x = case toView x of
+  BindF (MkOf val) z => case f val of
+    Just vb => yield vb >>= \_ => mapMaybe f (z val)
+    Nothing => pure ()  >> mapMaybe f (z val)
+  BindP val z    => pure val >>= \v => mapMaybe f (z v)
+  BindM act z    => lift act >>= \v => mapMaybe f (z v)
+  VF (MkOf v)    => case f v of
+    Just vb => yield vb >>= \_ => pure v
+    Nothing => pure v
+  VP val         => pure val
+  VM act         => lift act
+
+export
 span :  (a -> Bool)
      -> Stream (Of a) m r 
      -> Stream (Of a) m (Stream (Of a) m r)
@@ -220,16 +260,24 @@ span p x = case toView x of
   BindP val z => pure val >>= \v => span p (z v)
   BindM act z => lift act >>= \v => span p (z v)
   VP val      => pure (pure val)
-  VF (MkOf v) => pure $ if p v then yield v else pure v
+  VF (MkOf v) => pure $ if p v then pure v else yield v
   VM act      => pure $ lift act
 
-export
+export %inline
+takeUntil : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m ()
+takeUntil p = ignore . span p
+
+export %inline
 takeWhile : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m ()
-takeWhile p = ignore . span p
+takeWhile p = takeUntil (not . p)
+
+export
+dropUntil : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
+dropUntil p str = drain (span p str) >>= id
 
 export
 dropWhile : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
-dropWhile p str = drain (span p str) >>= id
+dropWhile p = dropUntil (not . p)
 
 export
 drop : Nat -> Stream (Of a) m r -> Stream (Of a) m r

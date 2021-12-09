@@ -153,8 +153,15 @@ runWith_ : Fuel -> Stream Empty IO r -> IO ()
 runWith_ f = ignore . runWith f
 
 export partial %inline
-run : Stream Empty IO r -> IO (Maybe r)
-run = runWith forever
+run : Stream Empty IO r -> IO r
+run s = fromPrim $ go (toView s)
+  where go : View Empty IO r -> (1 w : %World) -> IORes r
+        go (BindM y z) w =
+          let MkIORes val w2 = toPrim y w
+           in go (toView $ z val) w2
+        go (BindP y z) w = go (toView $ z y) w
+        go (VM r) w = toPrim r w
+        go (VP r) w = MkIORes r w
 
 export partial %inline
 run_ : Stream Empty IO r -> IO ()
