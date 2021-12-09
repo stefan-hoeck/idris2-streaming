@@ -57,12 +57,12 @@ tillRight x = lift x >>= next
 export
 mapM_ : (a -> m x) -> Stream (Of a) m r -> Stream Empty m r
 mapM_ f y = case toView y of
-  VBind (P val)      w => pure val >>= \v => mapM_ f (w v)
-  VBind (F $ MkOf v) w => lift (f v) >>= \_ => mapM_ f (w v)
-  VBind (M act)      w => lift act >>= \v => mapM_ f (w v)
-  VLift (P val)        => pure val
-  VLift (F $ MkOf v)   => lift (f v) $> v
-  VLift (M act)        => lift act
+  BindP val      w => pure val >>= \v => mapM_ f (w v)
+  BindF (MkOf v) w => lift (f v) >>= \_ => mapM_ f (w v)
+  BindM act      w => lift act >>= \v => mapM_ f (w v)
+  VP val           => pure val
+  VF (MkOf v)      => lift (f v) $> v
+  VM act           => lift act
 
 export %inline
 effects : Applicative m => Stream (Of a) m r -> Stream Empty m r
@@ -79,12 +79,12 @@ fold :  (x -> a -> x)
      -> Stream (Of a) m r
      -> Stream Empty m (b,r)
 fold step ini done x = case toView x of
-  VBind (P val)      z => pure val >>= \v => fold step ini done (z v)
-  VBind (F $ MkOf v) z => pure () >> fold step (step ini v) done (z v)
-  VBind (M act)      z => lift act >>= \v => fold step ini done (z v)
-  VLift (P val)        => pure (done ini, val)
-  VLift (F $ MkOf v)   => pure (done $ step ini v, v)
-  VLift (M act)        => (done ini,) <$> lift act
+  BindP val      z => pure val >>= \v => fold step ini done (z v)
+  BindF (MkOf v) z => pure () >> fold step (step ini v) done (z v)
+  BindM act      z => lift act >>= \v => fold step ini done (z v)
+  VP val           => pure (done ini, val)
+  VF (MkOf v)      => pure (done $ step ini v, v)
+  VM act           => (done ini,) <$> lift act
 
 export %inline
 foldMap : Monoid mo => (a -> mo) -> Stream (Of a) m r -> Stream Empty m (mo,r)
@@ -141,25 +141,25 @@ foldM :  (x -> a -> m x)
       -> Stream (Of a) m r
       -> Stream Empty m (b,r)
 foldM step ini done x = case toView x of
-  VBind (F $ MkOf v) z => do
+  BindF (MkOf v) z => do
     vx <- lift ini
     foldM step (step vx v) done (z v)
 
-  VBind (P val)      z => pure val >>= \v => foldM step ini done (z v)
-  VBind (M act)      z => lift act >>= \v => foldM step ini done (z v)
+  BindP val      z => pure val >>= \v => foldM step ini done (z v)
+  BindM act      z => lift act >>= \v => foldM step ini done (z v)
 
-  VLift (P val)        => do
+  VP val        => do
     vx <- lift ini
     vb <- lift (done vx)
     pure (vb, val)
 
-  VLift (F $ MkOf v)   => do
+  VF (MkOf v)   => do
     vx  <- lift ini
     vx2 <- lift (step vx v)
     vb  <- lift (done vx2)
     pure (vb,v)
 
-  VLift (M act)        => do
+  VM act        => do
     vr <- lift act
     vx <- lift ini
     vb <- lift (done vx)
@@ -172,12 +172,12 @@ foldM step ini done x = case toView x of
 export
 for : Stream (Of a) m r -> (a -> Stream f m x) -> Stream f m r
 for str fun = case toView str of
-  VBind (P val)       z => pure val >>= \v => for (z v) fun
-  VBind (F (MkOf va)) z => fun va   >>= \_ => for (z va) fun
-  VBind (M act)       z => lift act >>= \v => for (z v) fun
-  VLift (P val)         => pure val
-  VLift (F (MkOf va))   => fun va $> va
-  VLift (M act)         => lift act
+  BindF (MkOf va) z => fun va   >>= \_ => for (z va) fun
+  BindP val       z => pure val >>= \v => for (z v) fun
+  BindM act       z => lift act >>= \v => for (z v) fun
+  VF (MkOf va)      => fun va $> va
+  VP val            => pure val
+  VM act            => lift act
 
 export
 mapVals : (a -> b) -> Stream (Of a) m r -> Stream (Of b) m r
@@ -198,30 +198,30 @@ subst fun str = for str (yields . fun)
 export
 filter : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
 filter p x = case toView x of
-  VBind (F $ MkOf val) z =>
+  BindF (MkOf val) z =>
     if p val
        then yield val >>= \v => filter p (z v)
        else pure ()   >>   filter p (z val)
-  VBind (P val) z    => pure val >>= \v => filter p (z v)
-  VBind (M act) z    => lift act >>= \v => filter p (z v)
-  VLift (P val)      => pure val
-  VLift (F $ MkOf v) => if p v then yield v else pure v
-  VLift (M act)      => lift act
+  BindP val z    => pure val >>= \v => filter p (z v)
+  BindM act z    => lift act >>= \v => filter p (z v)
+  VP val         => pure val
+  VF (MkOf v)    => if p v then yield v else pure v
+  VM act         => lift act
 
 export
 span :  (a -> Bool)
      -> Stream (Of a) m r 
      -> Stream (Of a) m (Stream (Of a) m r)
 span p x = case toView x of
-  VBind (F $ MkOf val) z =>
+  BindF (MkOf val) z =>
     if p val
        then pure ()   >> pure (z val)
        else yield val >>= \v => span p (z v)
-  VBind (P val) z    => pure val >>= \v => span p (z v)
-  VBind (M act) z    => lift act >>= \v => span p (z v)
-  VLift (P val)      => pure (pure val)
-  VLift (F $ MkOf v) => pure $ if p v then yield v else pure v
-  VLift (M act)      => pure $ lift act
+  BindP val z => pure val >>= \v => span p (z v)
+  BindM act z => lift act >>= \v => span p (z v)
+  VP val      => pure (pure val)
+  VF (MkOf v) => pure $ if p v then yield v else pure v
+  VM act      => pure $ lift act
 
 export
 takeWhile : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m ()
