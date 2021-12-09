@@ -1,9 +1,10 @@
 export IDRIS2 ?= idris2
 
 lib_pkg = streaming.ipkg
+ex_pkg  = examples.ipkg
 
 .PHONY: all
-all: lib
+all: lib examples
 
 .PHONY: clean-install
 clean-install: clean install
@@ -14,6 +15,10 @@ clean-install-with-src: clean install
 .PHONY: lib
 lib:
 	${IDRIS2} --build ${lib_pkg}
+
+.PHONY: examples
+examples:
+	${IDRIS2} --build ${ex_pkg}
 
 .PHONY: install
 install:
@@ -26,7 +31,7 @@ install-with-src:
 .PHONY: clean
 clean:
 	${IDRIS2} --clean ${lib_pkg}
-	${IDRIS2} --clean ${test_pkg}
+	${IDRIS2} --clean ${examples_pkg}
 	${RM} -r build
 
 .PHONY: develop

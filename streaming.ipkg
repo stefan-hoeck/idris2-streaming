@@ -5,9 +5,6 @@ depends    = base       >= 0.5.1
            , sop        >= 0.5.0
            , bytestring >= 0.0.1
 
-main       = Main
-executable = "stream"
-
 modules    = Stream
            , Stream.Internal
            , Stream.File

@@ -20,6 +20,13 @@ lines h = tillRight $ do
   pure (Left s)
 
 export
+withLines :  HasIO io
+          => String
+          -> (Stream (Of String) io (Maybe FileError) -> io res)
+          -> io (Either FileError res)
+withLines s f = withFile s Read (pure . id) (\h => Right <$> f (lines h))
+
+export
 stdinLn : HasIO io => Stream (Of String) io r
 stdinLn = tillRight $ Left <$> getLine
 

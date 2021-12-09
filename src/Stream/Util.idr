@@ -2,6 +2,7 @@ module Stream.Util
 
 import Data.Colist
 import Data.SnocList
+import Data.Vect
 import Stream.Internal
 
 public export
@@ -91,56 +92,112 @@ foldMap : Monoid mo => (a -> mo) -> Stream (Of a) m r -> Stream Empty m (mo,r)
 foldMap f = fold (\vmo,va => vmo <+> f va) neutral id
 
 export %inline
+foldMap_ : Monoid mo => (a -> mo) -> Stream (Of a) m r -> Stream Empty m mo
+foldMap_ f = map fst . foldMap f
+
+export %inline
 sum : Num a => Stream (Of a) m r -> Stream Empty m (a,r)
 sum = fold (+) 0 id
+
+export %inline
+sum_ : Num a => Stream (Of a) m r -> Stream Empty m a
+sum_ = map fst . sum
 
 export %inline
 product : Num a => Stream (Of a) m r -> Stream Empty m (a,r)
 product = fold (*) 0 id
 
 export %inline
+product_ : Num a => Stream (Of a) m r -> Stream Empty m a
+product_ = map fst . product
+
+export %inline
 length : Stream (Of a) m r -> Stream Empty m (Nat,r)
 length = fold (\x,_ => S x) 0 id
+
+export %inline
+length_ : Stream (Of a) m r -> Stream Empty m Nat
+length_ = map fst . length
 
 export %inline
 count : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m (Nat,r)
 count p = fold (\x,va => if p va then S x else x) 0 id
 
 export %inline
+count_ : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m Nat
+count_ p = map fst . count p
+
+export %inline
 first : Stream (Of a) m r -> Stream Empty m (Maybe a,r)
 first = fold (\acc,va => acc <|> Just va) Nothing id
+
+export %inline
+first_ : Stream (Of a) m r -> Stream Empty m (Maybe a)
+first_ = map fst . first
 
 export %inline
 last : Stream (Of a) m r -> Stream Empty m (Maybe a,r)
 last = fold (\_,va => Just va) Nothing id
 
 export %inline
+last_ : Stream (Of a) m r -> Stream Empty m (Maybe a)
+last_ = map fst . last
+
+export %inline
 minimum : Ord a => Stream (Of a) m r -> Stream Empty m (Maybe a,r)
 minimum = fold (\acc,va => map (min va) acc <|> Just va) Nothing id
+
+export %inline
+minimum_ : Ord a => Stream (Of a) m r -> Stream Empty m (Maybe a)
+minimum_ = map fst . minimum
 
 export %inline
 maximum : Ord a => Stream (Of a) m r -> Stream Empty m (Maybe a,r)
 maximum = fold (\acc,va => map (max va) acc <|> Just va) Nothing id
 
 export %inline
+maximum_ : Ord a => Stream (Of a) m r -> Stream Empty m (Maybe a)
+maximum_ = map fst . maximum
+
+export %inline
 all : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m (Bool,r)
 all p = fold (\acc,va => acc && p va) True id
+
+export %inline
+all_ : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m Bool
+all_ p = map fst . all p
 
 export %inline
 any : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m (Bool,r)
 any p = fold (\acc,va => acc || p va) False id
 
 export %inline
-elem : Eq a => a -> Stream (Of a) m r -> Stream Empty m (Bool,r)
-elem va = any (va ==) 
+any_ : (a -> Bool) -> Stream (Of a) m r -> Stream Empty m Bool
+any_ p = map fst . any p
+
+export %inline
+elem : Eq a => a -> Stream (Of a) m r -> Stream Empty m (Bool, r)
+elem va = any (va ==)
+
+export %inline
+elem_ : Eq a => a -> Stream (Of a) m r -> Stream Empty m Bool
+elem_ va = map fst . elem va
 
 export %inline
 toSnocList : Stream (Of a) m r -> Stream Empty m (SnocList a, r)
 toSnocList = fold (:<) Lin id
 
 export %inline
+toSnocList_ : Stream (Of a) m r -> Stream Empty m (SnocList a)
+toSnocList_ = map fst . toSnocList
+
+export %inline
 toList : Stream (Of a) m r -> Stream Empty m (List a, r)
 toList = map (\(sx,vr) => (sx <>> Nil, vr)) . toSnocList
+
+export %inline
+toList_ : Stream (Of a) m r -> Stream Empty m (List a)
+toList_ = map fst . toList
 
 export
 foldM :  (x -> a -> m x)
@@ -179,13 +236,17 @@ scan :  (x -> a -> x)
      -> (x -> b)
      -> Stream (Of a) m r
      -> Stream (Of b) m r
-scan step ini done x = case toView x of
-  BindP val      z => pure val >>= \v => scan step ini done (z v)
-  BindF (MkOf v) z => yield (done ini) >>= \_ => scan step (step ini v) done (z v)
-  BindM act      z => lift act >>= \v => scan step ini done (z v)
-  VP val           => pure val
-  VF (MkOf v)      => yield (done $ step ini v) $> v
-  VM act           => lift act
+scan step ini done str = yield (done ini) >>= \_ => go ini str
+  where go : x -> Stream (Of a) m r -> Stream (Of b) m r
+        go vx s = case toView s of
+          BindF (MkOf v) z => 
+            let vx2 = step vx v
+             in yield (done vx2) >>= \_ => go vx2 (z v)
+          BindP val      z => pure val >>= \v => go vx (z v)
+          BindM act      z => lift act >>= \v => go vx (z v)
+          VP val           => pure val
+          VF (MkOf v)      => yield (done $ step vx v) $> v
+          VM act           => lift act
 
 --------------------------------------------------------------------------------
 --          Filters and Stream Transformers
@@ -204,6 +265,10 @@ for str fun = case toView str of
 export
 mapVals : (a -> b) -> Stream (Of a) m r -> Stream (Of b) m r
 mapVals f str = for str (yield . f)
+
+export %inline
+castVals : Cast from to => Stream (Of from) m r -> Stream (Of to) m r
+castVals = mapVals cast
 
 export
 mapValsM : (a -> m b) -> Stream (Of a) m r -> Stream (Of b) m r
@@ -282,3 +347,12 @@ dropWhile p = dropUntil (not . p)
 export
 drop : Nat -> Stream (Of a) m r -> Stream (Of a) m r
 drop n str = drain (splitsAt n str) >>= id
+
+export
+slidingWindow :  (n : Nat)
+              -> {auto 0 prf : IsSucc n}
+              -> Stream (Of a) m r
+              -> Stream (Of $ Vect n a) m r
+slidingWindow (S k) =
+  mapMaybe sequence .
+  scan (\prev,va => Just va :: init prev) (replicate (S k) Nothing) id
