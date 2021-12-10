@@ -6,6 +6,7 @@ depends    = base       >= 0.5.1
            , bytestring >= 0.0.1
 
 modules    = Stream
+           , Stream.ByteString
            , Stream.Internal
            , Stream.File
            , Stream.Util
