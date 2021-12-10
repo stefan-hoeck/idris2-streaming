@@ -21,227 +21,146 @@ import Control.WellFounded
 import Data.Fuel
 import Data.Nat
 
-public export
-data Stream : (f,m : Type -> Type) -> (r : Type) -> Type where
-  Bind : Stream f m r -> (r -> Stream f m s) -> Stream f m s
-  P    : r -> Stream f m r
-  F    : f r -> Stream f m r
-  M    : m r -> Stream f m r
-
-||| Calculates the number of left-nested binds in a `Stream`.
-public export
-depth : Stream f m r -> Nat
-depth (Bind x y) = S $ depth x
-depth (P x)      = 0
-depth (F x)      = 0
-depth (M x)      = 0
+%default total
 
 public export
-Sized (Stream f m r) where
-  size = depth
+I : Type -> Type
+I ty = ty
 
-||| A view on a `Stream` with left-nested binds reassociated.
 public export
-data View : (f,m : Type -> Type) -> (r : Type) -> Type where
-  BindP : r   -> (r -> Stream f m s) -> View f m s
-  BindF : f r -> (r -> Stream f m s) -> View f m s
-  BindM : m r -> (r -> Stream f m s) -> View f m s
-  VP    : r   -> View f m r
-  VF    : f r -> View f m r
-  VM    : m r -> View f m r
-
-view_ : (s : Stream f m r) -> (0 _ : SizeAccessible s) -> View f m r
-view_ (Bind x y) (Access rec) = case x of
-  F v      => BindF v y
-  Bind z w => view_ (Bind z $ \v => Bind (w v) y) (rec _ reflexive)
-  P v      => BindP v y
-  M v      => BindM v y
-view_ (F v) _ = VF v
-view_ (P v) _ = VP v
-view_ (M v) _ = VM v
-
-export %inline
-toView : (s : Stream f m r) -> View f m r
-toView s = view_ s (sizeAccessible s)
-
-export %inline
-fromView : View f m r -> Stream f m r
-fromView (BindP x y) = Bind (P x) y
-fromView (BindF x y) = Bind (F x) y
-fromView (BindM x y) = Bind (M x) y
-fromView (VF x)      = F x
-fromView (VP x)      = P x
-fromView (VM x)      = M x
-
---------------------------------------------------------------------------------
---          Interfaces
---------------------------------------------------------------------------------
-
-export
-Functor (Stream f m) where
-  map f s = Bind s (P . f)
-
-export %inline
-Applicative (Stream f m) where
-  pure      = P
-  fn <*> fk = Bind fn (\fun => map (fun $ ) fk)
-
-export %inline
-Monad (Stream f m) where
-  (>>=) = Bind
-
-export %inline
-HasIO io => HasIO (Stream f io) where
-  liftIO = M . liftIO
+data Stream : (m : Type -> Type) -> (a,r : Type) -> Type where
+  Pure  : r -> Stream m a r
+  Yield : (val : a) -> Inf (Stream m a r) -> Stream m a r
+  Del   : Inf (Stream m a r) -> Stream m a r
+  Bind  : m r -> (r -> Stream m a s) -> Stream m a s
 
 --------------------------------------------------------------------------------
 --          Lifting Values
 --------------------------------------------------------------------------------
 
 export %inline
-wrap : f (Stream f m r) -> Stream f m r
-wrap v = Bind (F v) id
+effect : m (Stream m a r) -> Stream m a r
+effect v = Bind v id
 
 export %inline
-effect : m (Stream f m r) -> Stream f m r
-effect v = Bind (M v) id
+yield : a -> Stream m a ()
+yield v = Yield v (Pure ())
 
 export %inline
-yields : f r -> Stream f m r
-yields = F
+yieldM : m a -> Stream m a ()
+yieldM v = Bind v yield
 
 export %inline
-yieldsM : m (f r) -> Stream f m r
-yieldsM v = Bind (M v) F
+lift : m r -> Stream m a r
+lift v = Bind v Pure
+
+--------------------------------------------------------------------------------
+--          Interfaces
+-----------------------------------------------------------------------------
+
+bind : Stream m a r -> (r -> Stream m a s) -> Stream m a s
+bind (Pure x) f      = f x
+bind (Yield val x) f = Yield val (bind x f)
+bind (Del x) f       = Del (bind x f)
+bind (Bind x g) f    = Bind x (\v => bind (g v) f)
+
+export
+Functor (Stream m a) where
+  map f s = bind s (Pure . f)
 
 export %inline
-lift : m r -> Stream f m r
-lift = M
+Applicative (Stream m a) where
+  pure      = Pure
+  fn <*> fk = bind fn (\fun => map (fun $ ) fk)
+
+export %inline
+Monad (Stream m a) where
+  (>>=) = bind
+
+export %inline
+HasIO io => HasIO (Stream io a) where
+  liftIO = lift . liftIO
 
 --------------------------------------------------------------------------------
 --          Running Streams
 --------------------------------------------------------------------------------
 
-public export
-data Empty : Type -> Type where
+export
+runWith : Fuel -> Stream IO Void r -> IO (Maybe r)
+runWith fuel s = fromPrim $ go fuel s
+  where go : Fuel -> Stream IO Void r -> (1 w : %World) -> IORes (Maybe r)
+        go (More x) (Del y)       w = go x y w
+        go (More x) (Bind y f)    w =
+          let MkIORes v w2 = toPrim y w in go x (f v) w2
+        go (More x) (Pure y)      w = MkIORes (Just y) w
+        go Dry _                  w = MkIORes Nothing w
+
 
 export
-runWith : Fuel -> Stream Empty IO r -> IO (Maybe r)
-runWith fuel s = fromPrim $ go fuel (toView s)
-  where go : Fuel -> View Empty IO r -> (1 w : %World) -> IORes (Maybe r)
-        go Dry _                w = MkIORes Nothing w
-        go (More x) (BindM y z) w =
-          let MkIORes val w2 = toPrim y w
-           in go x (toView $ z val) w2
-        go (More x) (BindP y z) w = go x (toView $ z y) w
-
-        go (More x) (VM r) w =
-            let MkIORes val w2 = toPrim r w
-             in MkIORes (Just val) w2
-        go (More x) (VP r) w = MkIORes (Just r) w
-
-export
-runPure : Fuel -> Stream Empty Empty r -> Maybe r
-runPure fuel s = go fuel (toView s)
-  where go : Fuel -> View Empty Empty r -> Maybe r
-        go (More x) (BindP y z) = go x (toView $ z y)
-        go (More x) (VP r)      = Just r
+runPure : Fuel -> Stream I Void r -> Maybe r
+runPure fuel s = go fuel s
+  where go : Fuel -> Stream I Void r -> Maybe r
+        go (More x) (Pure y)    = Just y
+        go (More x) (Del y)     = go x y
+        go (More x) (Bind y f)  = go x (f y)
         go Dry _                = Nothing
 
 export %inline
-runWith_ : Fuel -> Stream Empty IO r -> IO ()
+runWith_ : Fuel -> Stream IO Void r -> IO ()
 runWith_ f = ignore . runWith f
 
-export partial %inline
-run : Stream Empty IO r -> IO r
-run s = fromPrim $ go (toView s)
-  where go : View Empty IO r -> (1 w : %World) -> IORes r
-        go (BindM y z) w =
-          let MkIORes val w2 = toPrim y w
-           in go (toView $ z val) w2
-        go (BindP y z) w = go (toView $ z y) w
-        go (VM r) w = toPrim r w
-        go (VP r) w = MkIORes r w
+export covering
+run : Stream IO Void r -> IO r
+run s = fromPrim $ go s
+  where go : Stream IO Void r -> (1 w : %World) -> IORes r
+        go (Del y)       w = go y w
+        go (Bind y f)    w =
+          let MkIORes v w2 = toPrim y w in go (f v) w2
+        go (Pure y)      w = MkIORes y w
 
-export partial %inline
-run_ : Stream Empty IO r -> IO ()
-run_ = runWith_ forever
+export covering %inline
+run_ : Stream IO Void r -> IO ()
+run_ = ignore . run
 
-export
-concat : Stream (Stream f m) m r -> Stream f m r
-concat s = case toView s of
-  BindF eff y => eff      >>= \v => concat (y v)
-  BindP val y => pure val >>= \v => concat (y v)
-  BindM act y => lift act >>= \v => concat (y v)
-  VF eff      => eff
-  VP val      => pure val
-  VM act      => lift act
-
---------------------------------------------------------------------------------
---          Mapping Values
---------------------------------------------------------------------------------
-
-maps_ : ((0 x : _) -> f x -> g x) -> Stream f m r -> Stream g m r
-maps_ fun fn = case toView fn of
-  BindF eff fu => yields (fun _ eff) >>= \x => maps_ fun (fu x)
-  BindP val fu => pure val >>= \x => maps_ fun (fu x)
-  BindM act fu => lift act >>= \x => maps_ fun (fu x)
-  VP val       => pure val
-  VF eff       => yields $ fun _ eff
-  VM act       => lift act
-
-mapsM_ : ((0 x : _) -> f x -> m (g x)) -> Stream f m r -> Stream g m r
-mapsM_ fun fn = case toView fn of
-  BindF eff fu => lift (fun _ eff) >>= yields >>= \v => mapsM_ fun (fu v)
-  BindP val fu => pure val >>= \x => mapsM_ fun (fu x)
-  BindM act fu => lift act >>= \x => mapsM_ fun (fu x)
-  VP val       => pure val
-  VF eff       => Bind (lift $ fun _ eff) yields
-  VM act       => lift act
-
-export %inline
-maps : (forall x . f x -> g x) -> Stream f m r -> Stream g m r
-maps fun = maps_ (\_ => fun)
-
-export %inline
-mapsM : (forall x . f x -> m (g x)) -> Stream f m r -> Stream g m r
-mapsM fun = mapsM_ (\_ => fun)
+export covering
+concat : Stream m (Stream m a ()) r -> Stream m a r
+concat (Pure x)      = Pure x
+concat (Yield val x) = val >> concat x
+concat (Del x)       = Del (concat x)
+concat (Bind x f)    = Bind x (\v => concat (f v))
 
 --------------------------------------------------------------------------------
 --          Creating Streams
 --------------------------------------------------------------------------------
 
 export
-unfold : (s -> m (Either r (f s))) -> s -> Stream f m r
+unfold : (s -> m (Either r (a,s))) -> s -> Stream m a r
 unfold fun vs = lift (fun vs) >>= go
-  where go : Either r (f s) -> Stream f m r
-        go (Left x)  = pure x
-        go (Right x) = yields x >>= unfold fun
+  where go : Either r (a,s) -> Stream m a r
+        go (Left x)        = Pure x
+        go (Right (va,vs)) = Yield va (unfold fun vs)
 
 export
-repeat : f () -> Stream f m Void
-repeat v = yields v >> repeat v
+repeat : a -> Stream m a Void
+repeat v = Yield v (repeat v)
 
 export
-replicate : Nat -> f () -> Stream f m ()
-replicate 0     _ = pure ()
-replicate (S k) v = yields v >> replicate k v
+replicate : Nat -> a -> Stream m a ()
+replicate 0     _ = Pure ()
+replicate (S k) v = Yield v (replicate k v)
 
 --------------------------------------------------------------------------------
 --          Splitting Streams
 --------------------------------------------------------------------------------
 
-export
-splitsAt : Nat -> Stream f m r -> Stream f m (Stream f m r)
-splitsAt 0     x = pure x
-splitsAt (S k) x = case toView x of
-  BindF eff z => Bind (yields eff) (\v => splitsAt k (z v))
-  BindP val z => Bind (pure val)   (\v => splitsAt (S k) (z v))
-  BindM act z => Bind (lift act)   (\v => splitsAt (S k) (z v))
-  VF v        => pure (F v)
-  VP v        => pure (P v)
-  VM v        => pure (M v)
+export covering
+splitAt : Nat -> Stream m a r -> Stream m a (Stream m a r)
+splitAt 0     x = Pure x
+splitAt (S k) (Pure x)      = Pure (Pure x)
+splitAt (S k) (Yield val x) = Yield val (splitAt k x)
+splitAt (S k) (Del x)       = Del (splitAt (S k) x)
+splitAt (S k) (Bind x f)    = Bind x (\v => splitAt (S k) (f v))
 
-export
+export covering
 take : Nat -> Stream f m r -> Stream f m ()
-take n = ignore . splitsAt n
+take n = ignore . splitAt n
