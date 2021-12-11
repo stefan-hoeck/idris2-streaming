@@ -7,7 +7,7 @@ import Stream.Internal
 
 public export
 data Of : (v,r : Type) -> Type where
-  MkOf : (val : v) -> Of v v
+  MkOf : (val : v) -> Of v ()
 
 public export
 fromOf : Of a b -> a
@@ -18,37 +18,37 @@ fromOf (MkOf val) = val
 --------------------------------------------------------------------------------
 
 export %inline
-yield : a -> Stream (Of a) m a
+yield : a -> Stream (Of a) m ()
 yield = yields . MkOf
 
 export
 list : List a -> Stream (Of a) m ()
 list []        = pure ()
-list (x :: xs) = yield x >>= \_ => list xs
+list (x :: xs) = yield x >> list xs
 
 export
 stream : Stream a -> Stream (Of a) m Void
-stream (x :: y) = yield x >>= \_ => stream y
+stream (x :: y) = yield x >> stream y
 
 export
 colist : Colist a -> Stream (Of a) m ()
 colist []       = pure ()
-colist (x :: y) = yield x >>= \_ => colist y
+colist (x :: y) = yield x >> colist y
 
 ||| Generates the sequence (ini, f ini, f $ f ini, ...)
 export
 iterate : (fun : a -> a) -> (ini : a) -> Stream (Of a) m Void
-iterate f ini = yield ini >>= \_ => iterate f (f ini)
+iterate f ini = yield ini >> iterate f (f ini)
 
 export
 generate : (s -> (s,a)) -> s -> Stream (Of a) m Void
-generate f ini = let (vs,va) = f ini in yield va >>= \_ => generate f vs
+generate f ini = let (vs,va) = f ini in yield va >> generate f vs
 
 export
 tillRight : m (Either a r) -> Stream (Of a) m r
 tillRight x = lift x >>= next
   where next : Either a r -> Stream (Of a) m r
-        next (Left v)  = yield v >>= \_ => tillRight x
+        next (Left v)  = yield v >> tillRight x
         next (Right r) = pure r
 
 --------------------------------------------------------------------------------
@@ -59,10 +59,10 @@ export
 mapM_ : (a -> m x) -> Stream (Of a) m r -> Stream Empty m r
 mapM_ f y = case toView y of
   BindP val      w => pure val >>= \v => mapM_ f (w v)
-  BindF (MkOf v) w => lift (f v) >>= \_ => mapM_ f (w v)
+  BindF (MkOf v) w => lift (f v) >>= \_ => mapM_ f (w ())
   BindM act      w => lift act >>= \v => mapM_ f (w v)
   VP val           => pure val
-  VF (MkOf v)      => lift (f v) $> v
+  VF (MkOf v)      => ignore $ lift (f v)
   VM act           => lift act
 
 export %inline
@@ -81,10 +81,10 @@ fold :  (x -> a -> x)
      -> Stream Empty m (b,r)
 fold step ini done x = case toView x of
   BindP val      z => pure val >>= \v => fold step ini done (z v)
-  BindF (MkOf v) z => pure () >> fold step (step ini v) done (z v)
+  BindF (MkOf v) z => pure () >> fold step (step ini v) done (z ())
   BindM act      z => lift act >>= \v => fold step ini done (z v)
   VP val           => pure (done ini, val)
-  VF (MkOf v)      => pure (done $ step ini v, v)
+  VF (MkOf v)      => pure (done $ step ini v, ())
   VM act           => (done ini,) <$> lift act
 
 export %inline
@@ -216,7 +216,7 @@ foldM :  (x -> a -> m x)
 foldM step ini done x = case toView x of
   BindF (MkOf v) z => do
     vx <- lift ini
-    foldM step (step vx v) done (z v)
+    foldM step (step vx v) done (z ())
 
   BindP val      z => pure val >>= \v => foldM step ini done (z v)
   BindM act      z => lift act >>= \v => foldM step ini done (z v)
@@ -230,7 +230,7 @@ foldM step ini done x = case toView x of
     vx  <- lift ini
     vx2 <- lift (step vx v)
     vb  <- lift (done vx2)
-    pure (vb,v)
+    pure (vb,())
 
   VM act        => do
     vr <- lift act
@@ -249,11 +249,11 @@ scan step ini done str = yield (done ini) >>= \_ => go ini str
         go vx s = case toView s of
           BindF (MkOf v) z => 
             let vx2 = step vx v
-             in yield (done vx2) >>= \_ => go vx2 (z v)
+             in yield (done vx2) >> go vx2 (z ())
           BindP val      z => pure val >>= \v => go vx (z v)
           BindM act      z => lift act >>= \v => go vx (z v)
           VP val           => pure val
-          VF (MkOf v)      => yield (done $ step vx v) $> v
+          VF (MkOf v)      => yield (done $ step vx v)
           VM act           => lift act
 
 --------------------------------------------------------------------------------
@@ -263,10 +263,10 @@ scan step ini done str = yield (done ini) >>= \_ => go ini str
 export
 for : Stream (Of a) m r -> (a -> Stream f m x) -> Stream f m r
 for str fun = case toView str of
-  BindF (MkOf va) z => fun va   >>= \_ => for (z va) fun
+  BindF (MkOf va) z => fun va   >>= \_ => for (z ()) fun
   BindP val       z => pure val >>= \v => for (z v) fun
   BindM act       z => lift act >>= \v => for (z v) fun
-  VF (MkOf va)      => fun va $> va
+  VF (MkOf va)      => ignore $ fun va
   VP val            => pure val
   VM act            => lift act
 
@@ -299,25 +299,25 @@ filter : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
 filter p x = case toView x of
   BindF (MkOf val) z =>
     if p val
-       then yield val >>= \v => filter p (z v)
-       else pure ()   >>   filter p (z val)
+       then yield val >> filter p (z ())
+       else pure ()   >> filter p (z ())
   BindP val z    => pure val >>= \v => filter p (z v)
   BindM act z    => lift act >>= \v => filter p (z v)
   VP val         => pure val
-  VF (MkOf v)    => if p v then yield v else pure v
+  VF (MkOf v)    => if p v then yield v else pure ()
   VM act         => lift act
 
 export
 mapMaybe : (a -> Maybe b) -> Stream (Of a) m r -> Stream (Of b) m r
 mapMaybe f x = case toView x of
   BindF (MkOf val) z => case f val of
-    Just vb => yield vb >>= \_ => mapMaybe f (z val)
-    Nothing => pure ()  >> mapMaybe f (z val)
+    Just vb => yield vb >> mapMaybe f (z ())
+    Nothing => pure ()  >> mapMaybe f (z ())
   BindP val z    => pure val >>= \v => mapMaybe f (z v)
   BindM act z    => lift act >>= \v => mapMaybe f (z v)
   VF (MkOf v)    => case f v of
-    Just vb => yield vb >>= \_ => pure v
-    Nothing => pure v
+    Just vb => yield vb
+    Nothing => pure ()
   VP val         => pure val
   VM act         => lift act
 
@@ -328,12 +328,12 @@ span :  (a -> Bool)
 span p x = case toView x of
   BindF (MkOf val) z =>
     if p val
-       then pure ()   >> pure (z val)
-       else yield val >>= \v => span p (z v)
+       then pure (yield val >> z ())
+       else yield val >> span p (z ())
   BindP val z => pure val >>= \v => span p (z v)
   BindM act z => lift act >>= \v => span p (z v)
   VP val      => pure (pure val)
-  VF (MkOf v) => pure $ if p v then pure v else yield v
+  VF (MkOf v) => if p v then pure (yield v) else yield v >> (pure $ pure ())
   VM act      => pure $ lift act
 
 export %inline
