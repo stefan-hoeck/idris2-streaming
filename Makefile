@@ -10,7 +10,7 @@ all: lib examples
 clean-install: clean install
 
 .PHONY: clean-install-with-src
-clean-install-with-src: clean install
+clean-install-with-src: clean install-with-src
 
 .PHONY: lib
 lib:
@@ -31,7 +31,7 @@ install-with-src:
 .PHONY: clean
 clean:
 	${IDRIS2} --clean ${lib_pkg}
-	${IDRIS2} --clean ${examples_pkg}
+	${IDRIS2} --clean ${ex_pkg}
 	${RM} -r build
 
 .PHONY: develop
