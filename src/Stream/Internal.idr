@@ -152,7 +152,7 @@ export %inline
 runWith_ : Fuel -> Stream Empty IO r -> IO ()
 runWith_ f = ignore . runWith f
 
-export partial %inline
+export %inline
 run : Stream Empty IO r -> IO r
 run s = fromPrim $ go (toView s)
   where go : View Empty IO r -> (1 w : %World) -> IORes r
@@ -163,7 +163,7 @@ run s = fromPrim $ go (toView s)
         go (VM r) w = toPrim r w
         go (VP r) w = MkIORes r w
 
-export partial %inline
+export %inline
 run_ : Stream Empty IO r -> IO ()
 run_ = runWith_ forever
 
@@ -198,6 +198,17 @@ mapsM_ fun fn = case toView fn of
   VP val       => pure val
   VF eff       => Bind (lift $ fun _ eff) yields
   VM act       => lift act
+
+export
+handle : ((0 x : _) -> f x -> m x) -> Stream f m r -> Stream Empty m r
+handle fun fn = case toView fn of
+  BindF x g => lift (fun _ x) >>= \v => handle fun (g v)
+  BindP x g => pure x >>= \v => handle fun (g v)
+  BindM x g => lift x >>= \v => handle fun (g v)
+  VF x      => lift (fun _ x)
+  VP x      => pure x
+  VM x      => lift x
+
 
 export %inline
 maps : (forall x . f x -> g x) -> Stream f m r -> Stream g m r

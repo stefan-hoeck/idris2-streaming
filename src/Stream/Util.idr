@@ -364,3 +364,28 @@ slidingWindow :  (n : Nat)
 slidingWindow (S k) =
   mapMaybe sequence .
   scan (\prev,va => Just va :: init prev) (replicate (S k) Nothing) id
+
+export
+breakWith :  (a -> Maybe (a,a))
+          -> Stream (Of a) m r
+          -> Stream (Of a) m (Stream (Of a) m r)
+breakWith f x = case toView x of
+  BindF (MkOf y) g => case f y of
+    Just (yh,yt) => yield yh >>= \v => pure (yield yt >>= \_ => g v)
+    Nothing      => yield y >>= \v => breakWith f (g v)
+  BindP y g => pure y >>= \v => breakWith f (g v)
+  BindM y g => lift y >>= \v => breakWith f (g v)
+  VF (MkOf y) => case f y of
+    Just (yh,yt) => yield yh >> pure (yield yt)
+    Nothing      => yield y  >> pure (pure ())
+  VP y => pure (pure y)
+  VM y => pure (lift y)
+
+export
+splitWith :  (a -> Maybe (a,a))
+          -> Stream (Of a) m r
+          -> Stream (Stream (Of a) m) m r
+splitWith f s = F (breakWith f s) >>=
+  \case P r => P r
+        M y => M y
+        x   => splitWith f x

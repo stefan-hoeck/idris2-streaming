@@ -41,6 +41,14 @@ bytes n h = tillRight $ do
   pure (Left s)
 
 export
+withBytes :  HasIO io
+          => String
+          -> Bits32
+          -> (Stream (Of ByteString) io (Maybe FileError) -> io res)
+          -> io (Either FileError res)
+withBytes s n f = withFile s Read (pure . id) (\h => Right <$> f (bytes n h))
+
+export
 stdoutLn : HasIO io => Stream (Of String) io r -> Stream Empty io r
 stdoutLn = mapM_ putStrLn
 
