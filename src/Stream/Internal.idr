@@ -209,7 +209,6 @@ handle fun fn = case toView fn of
   VP x      => pure x
   VM x      => lift x
 
-
 export %inline
 maps : (forall x . f x -> g x) -> Stream f m r -> Stream g m r
 maps fun = maps_ (\_ => fun)
@@ -237,22 +236,3 @@ export
 replicate : Nat -> f () -> Stream f m ()
 replicate 0     _ = pure ()
 replicate (S k) v = yields v >> replicate k v
-
---------------------------------------------------------------------------------
---          Splitting Streams
---------------------------------------------------------------------------------
-
-export
-splitsAt : Nat -> Stream f m r -> Stream f m (Stream f m r)
-splitsAt 0     x = pure x
-splitsAt (S k) x = case toView x of
-  BindF eff z => Bind (yields eff) (\v => splitsAt k (z v))
-  BindP val z => Bind (pure val)   (\v => splitsAt (S k) (z v))
-  BindM act z => Bind (lift act)   (\v => splitsAt (S k) (z v))
-  VF v        => pure (F v)
-  VP v        => pure (P v)
-  VM v        => pure (M v)
-
-export
-take : Nat -> Stream f m r -> Stream f m ()
-take n = ignore . splitsAt n

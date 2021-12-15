@@ -7,42 +7,133 @@ import Stream.Internal
 
 public export
 data Of : (v,r : Type) -> Type where
-  MkOf : (val : v) -> Of v ()
+  MkOf : (vals : List v) -> Of v ()
 
 public export
-fromOf : Of a b -> a
-fromOf (MkOf val) = val
+fromOf : Of a b -> List a
+fromOf (MkOf vals) = vals
+
+--------------------------------------------------------------------------------
+--          Utilities
+--------------------------------------------------------------------------------
+
+total
+foldList : (x -> a -> x) -> x -> List a -> x
+foldList f y (h :: t) = foldList f (f y h) t
+foldList f y []       = y
+
+total
+scanList : (x -> a -> x)
+         -> x
+         -> (x -> b)
+         -> SnocList b
+         -> List a
+         -> (x, List b)
+scanList step acc done bs (va :: as) =
+  let acc2 = step acc va
+   in scanList step acc2 done (bs :< done acc2) as
+scanList step acc done bs []         = (acc, bs <>> Nil)
+
+total
+mapList : (a -> b) -> SnocList b -> List a -> List b
+mapList f bs (va :: as) = mapList f (bs :< f va) as
+mapList f bs []         = bs <>> Nil
+
+total
+filterList : (a -> Bool) -> SnocList a -> List a -> List a
+filterList p sa (x :: xs) =
+  if p x then filterList p (sa :< x) xs else filterList p sa xs
+filterList p sa []        = sa <>> Nil
+
+total
+mapMaybeList : (a -> Maybe b) -> SnocList b -> List a -> List b
+mapMaybeList f sb (x :: xs) = case f x of
+  Just vb => mapMaybeList f (sb :< vb) xs
+  Nothing => mapMaybeList f sb xs
+mapMaybeList f sb []        = sb <>> Nil
+
+total
+spanList :  (a -> Bool)
+         -> SnocList a
+         -> List a
+         -> Either (List a) (List a, List a)
+spanList f sx (x :: xs) =
+  if f x
+     then Right (sx <>> Nil, x :: xs)
+     else spanList f (sx :< x) xs
+spanList f sx [] = Left (sx <>> Nil)
+
+total
+breakList : (a -> Maybe (a,a))
+         -> SnocList a
+         -> List a
+         -> Maybe (List a, List a)
+breakList f sx (x :: xs) = case f x of
+  Just (h,t) => Just (sx <>> [h], t :: xs)
+  Nothing    => breakList f (sx :< x) xs
+breakList f sx [] = Nothing
+
+total
+splitList :  Nat
+          -> SnocList a
+          -> List a
+          -> Either Nat (List a, List a)
+splitList (S k) sx (x :: xs) = splitList k (sx :< x) xs
+splitList (S k) sx []        = Left (S k)
+splitList 0     sx xs        = Right (sx <>> Nil, xs)
 
 --------------------------------------------------------------------------------
 --          Producers
 --------------------------------------------------------------------------------
 
+chunks : Nat
+chunks = 512
+
+export %inline
+yieldAll : List a -> Stream (Of a) m ()
+yieldAll = yields . MkOf 
+
 export %inline
 yield : a -> Stream (Of a) m ()
-yield = yields . MkOf
+yield v = yieldAll [v]
 
-export
+export %inline
 list : List a -> Stream (Of a) m ()
-list []        = pure ()
-list (x :: xs) = yield x >> list xs
+list = yieldAll
 
-export
+streamChunks : Nat -> List a -> Stream a -> Stream (Of a) m Void
+streamChunks (S k) xs (h :: t) =
+  streamChunks k (h :: xs) t
+streamChunks 0 xs ys =
+  yieldAll (reverse xs) >> streamChunks chunks Nil ys
+
+export %inline
 stream : Stream a -> Stream (Of a) m Void
-stream (x :: y) = yield x >> stream y
+stream = streamChunks chunks Nil
 
-export
+colistChunks : Nat -> List a -> Colist a -> Stream (Of a) m ()
+colistChunks (S k) xs (y :: ys) = colistChunks k (y :: xs) ys
+colistChunks (S k) xs [] = yieldAll (reverse xs)
+colistChunks 0     xs ys = yieldAll (reverse xs) >> colistChunks chunks Nil ys
+
+export %inline
 colist : Colist a -> Stream (Of a) m ()
-colist []       = pure ()
-colist (x :: y) = yield x >> colist y
+colist = colistChunks chunks Nil
 
 ||| Generates the sequence (ini, f ini, f $ f ini, ...)
 export
 iterate : (fun : a -> a) -> (ini : a) -> Stream (Of a) m Void
-iterate f ini = yield ini >> iterate f (f ini)
+iterate f ini = go chunks Nil ini
+  where go : Nat -> List a -> a -> Stream (Of a) m Void
+        go (S k) xs x = go k (x :: xs) (f x)
+        go 0 xs x = yieldAll (reverse xs) >> go chunks Nil x
 
 export
 generate : (s -> (s,a)) -> s -> Stream (Of a) m Void
-generate f ini = let (vs,va) = f ini in yield va >> generate f vs
+generate f ini = go chunks Nil ini
+  where go : Nat -> List a -> s -> Stream (Of a) m Void
+        go 0     xs x = yieldAll (reverse xs) >> go chunks Nil x
+        go (S k) xs x = let (vs,va) = f x in go k (va :: xs) vs
 
 export
 tillRight : m (Either a r) -> Stream (Of a) m r
@@ -56,13 +147,13 @@ tillRight x = lift x >>= next
 --------------------------------------------------------------------------------
 
 export
-mapM_ : (a -> m x) -> Stream (Of a) m r -> Stream Empty m r
+mapM_ : Applicative m => (a -> m x) -> Stream (Of a) m r -> Stream Empty m r
 mapM_ f y = case toView y of
   BindP val      w => pure val >>= \v => mapM_ f (w v)
-  BindF (MkOf v) w => lift (f v) >>= \_ => mapM_ f (w ())
+  BindF (MkOf v) w => lift (traverse f v) >>= \_ => mapM_ f (w ())
   BindM act      w => lift act >>= \v => mapM_ f (w v)
   VP val           => pure val
-  VF (MkOf v)      => ignore $ lift (f v)
+  VF (MkOf v)      => ignore $ lift (traverse f v)
   VM act           => lift act
 
 export %inline
@@ -81,10 +172,10 @@ fold :  (x -> a -> x)
      -> Stream Empty m (b,r)
 fold step ini done x = case toView x of
   BindP val      z => pure val >>= \v => fold step ini done (z v)
-  BindF (MkOf v) z => pure () >> fold step (step ini v) done (z ())
+  BindF (MkOf v) z => pure () >> fold step (foldList step ini v) done (z ())
   BindM act      z => lift act >>= \v => fold step ini done (z v)
   VP val           => pure (done ini, val)
-  VF (MkOf v)      => pure (done $ step ini v, ())
+  VF (MkOf v)      => pure (done $ foldList step ini v, ())
   VM act           => (done ini,) <$> lift act
 
 export %inline
@@ -207,36 +298,36 @@ export %inline
 toList_ : Stream (Of a) m r -> Stream Empty m (List a)
 toList_ = map fst . toList
 
-export
-foldM :  (x -> a -> m x)
-      -> m x
-      -> (x -> m b)
-      -> Stream (Of a) m r
-      -> Stream Empty m (b,r)
-foldM step ini done x = case toView x of
-  BindF (MkOf v) z => do
-    vx <- lift ini
-    foldM step (step vx v) done (z ())
-
-  BindP val      z => pure val >>= \v => foldM step ini done (z v)
-  BindM act      z => lift act >>= \v => foldM step ini done (z v)
-
-  VP val        => do
-    vx <- lift ini
-    vb <- lift (done vx)
-    pure (vb, val)
-
-  VF (MkOf v)   => do
-    vx  <- lift ini
-    vx2 <- lift (step vx v)
-    vb  <- lift (done vx2)
-    pure (vb,())
-
-  VM act        => do
-    vr <- lift act
-    vx <- lift ini
-    vb <- lift (done vx)
-    pure (vb, vr)
+-- export
+-- foldM :  (x -> a -> m x)
+--       -> m x
+--       -> (x -> m b)
+--       -> Stream (Of a) m r
+--       -> Stream Empty m (b,r)
+-- foldM step ini done x = case toView x of
+--   BindF (MkOf v) z => do
+--     vx <- lift ini
+--     foldM step (step vx v) done (z ())
+-- 
+--   BindP val      z => pure val >>= \v => foldM step ini done (z v)
+--   BindM act      z => lift act >>= \v => foldM step ini done (z v)
+-- 
+--   VP val        => do
+--     vx <- lift ini
+--     vb <- lift (done vx)
+--     pure (vb, val)
+-- 
+--   VF (MkOf v)   => do
+--     vx  <- lift ini
+--     vx2 <- lift (step vx v)
+--     vb  <- lift (done vx2)
+--     pure (vb,())
+-- 
+--   VM act        => do
+--     vr <- lift act
+--     vx <- lift ini
+--     vb <- lift (done vx)
+--     pure (vb, vr)
 
 export
 scan :  (x -> a -> x)
@@ -248,12 +339,12 @@ scan step ini done str = yield (done ini) >>= \_ => go ini str
   where go : x -> Stream (Of a) m r -> Stream (Of b) m r
         go vx s = case toView s of
           BindF (MkOf v) z => 
-            let vx2 = step vx v
-             in yield (done vx2) >> go vx2 (z ())
+            let (vx2,bs) = scanList step vx done Lin v
+             in yieldAll bs >> go vx2 (z ())
           BindP val      z => pure val >>= \v => go vx (z v)
           BindM act      z => lift act >>= \v => go vx (z v)
           VP val           => pure val
-          VF (MkOf v)      => yield (done $ step vx v)
+          VF (MkOf v)      => yieldAll (snd $ scanList step vx done Lin v)
           VM act           => lift act
 
 --------------------------------------------------------------------------------
@@ -261,7 +352,7 @@ scan step ini done str = yield (done ini) >>= \_ => go ini str
 --------------------------------------------------------------------------------
 
 export
-for : Stream (Of a) m r -> (a -> Stream f m x) -> Stream f m r
+for : Stream (Of a) m r -> (List a -> Stream f m x) -> Stream f m r
 for str fun = case toView str of
   BindF (MkOf va) z => fun va   >>= \_ => for (z ()) fun
   BindP val       z => pure val >>= \v => for (z v) fun
@@ -271,69 +362,55 @@ for str fun = case toView str of
   VM act            => lift act
 
 export
+forVals : (List a -> List b) -> Stream (Of a) m r -> Stream (Of b) m r
+forVals f str = for str (yieldAll . f)
+
+export %inline
 mapVals : (a -> b) -> Stream (Of a) m r -> Stream (Of b) m r
-mapVals f str = for str (yield . f)
+mapVals f = forVals (mapList f Lin)
 
 export %inline
 castVals : Cast from to => Stream (Of from) m r -> Stream (Of to) m r
 castVals = mapVals cast
 
 export
-mapValsM : (a -> m b) -> Stream (Of a) m r -> Stream (Of b) m r
-mapValsM f str = for str $ \va => lift (f va) >>= yield
-
-export
-drain : Stream (Of a) m r -> Stream (Of a) m r
-drain str = for str (\_ => pure ())
+mapValsM : Applicative m => (a -> m b) -> Stream (Of a) m r -> Stream (Of b) m r
+mapValsM f str = for str $ \va => lift (traverse f va) >>= yieldAll
 
 export %inline
-with_ : Stream (Of a) m r -> (a -> f x) -> Stream f m r
+drain : Stream (Of a) m r -> Stream (Of a) m r
+drain = forVals (const [])
+
+export %inline
+with_ : Stream (Of a) m r -> (List a -> f x) -> Stream f m r
 with_ str fun = for str (yields . fun)
 
 export %inline
-subst : (a -> f x) -> Stream (Of a) m r -> Stream f m r
+subst : (List a -> f x) -> Stream (Of a) m r -> Stream f m r
 subst fun str = for str (yields . fun)
 
-export
+export %inline
 filter : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
-filter p x = case toView x of
-  BindF (MkOf val) z =>
-    if p val
-       then yield val >> filter p (z ())
-       else pure ()   >> filter p (z ())
-  BindP val z    => pure val >>= \v => filter p (z v)
-  BindM act z    => lift act >>= \v => filter p (z v)
-  VP val         => pure val
-  VF (MkOf v)    => if p v then yield v else pure ()
-  VM act         => lift act
+filter p = forVals (filterList p Lin)
 
-export
+export %inline
 mapMaybe : (a -> Maybe b) -> Stream (Of a) m r -> Stream (Of b) m r
-mapMaybe f x = case toView x of
-  BindF (MkOf val) z => case f val of
-    Just vb => yield vb >> mapMaybe f (z ())
-    Nothing => pure ()  >> mapMaybe f (z ())
-  BindP val z    => pure val >>= \v => mapMaybe f (z v)
-  BindM act z    => lift act >>= \v => mapMaybe f (z v)
-  VF (MkOf v)    => case f v of
-    Just vb => yield vb
-    Nothing => pure ()
-  VP val         => pure val
-  VM act         => lift act
+mapMaybe f = forVals (mapMaybeList f Lin)
 
 export
 span :  (a -> Bool)
      -> Stream (Of a) m r 
      -> Stream (Of a) m (Stream (Of a) m r)
 span p x = case toView x of
-  BindF (MkOf val) z =>
-    if p val
-       then pure (yield val >> z ())
-       else yield val >> span p (z ())
+  BindF (MkOf vals) z => case spanList p Lin vals of
+    Left vs => yieldAll vs >> span p (z ())
+    Right (vs,rest) => yieldAll vs $> (yieldAll rest >> z ())
   BindP val z => pure val >>= \v => span p (z v)
   BindM act z => lift act >>= \v => span p (z v)
   VP val      => pure (pure val)
-  VF (MkOf v) => if p v then pure (yield v) else yield v >> (pure $ pure ())
+  VF (MkOf v) => case spanList p Lin v of
+    Left vs         => yieldAll vs $> pure ()
+    Right (vs,rest) => yieldAll vs $> yieldAll rest
   VM act      => pure $ lift act
 
 export %inline
@@ -353,10 +430,6 @@ dropWhile : (a -> Bool) -> Stream (Of a) m r -> Stream (Of a) m r
 dropWhile p = dropUntil (not . p)
 
 export
-drop : Nat -> Stream (Of a) m r -> Stream (Of a) m r
-drop n str = drain (splitsAt n str) >>= id
-
-export
 slidingWindow :  (n : Nat)
               -> {auto 0 prf : IsSucc n}
               -> Stream (Of a) m r
@@ -370,14 +443,14 @@ breakWith :  (a -> Maybe (a,a))
           -> Stream (Of a) m r
           -> Stream (Of a) m (Stream (Of a) m r)
 breakWith f x = case toView x of
-  BindF (MkOf y) g => case f y of
-    Just (yh,yt) => yield yh >>= \v => pure (yield yt >>= \_ => g v)
-    Nothing      => yield y >>= \v => breakWith f (g v)
+  BindF (MkOf y) g => case breakList f Lin y of
+    Just (yh,yt) => yieldAll yh >>= \v => pure (yieldAll yt >>= \_ => g v)
+    Nothing      => yieldAll y >>= \v => breakWith f (g v)
   BindP y g => pure y >>= \v => breakWith f (g v)
   BindM y g => lift y >>= \v => breakWith f (g v)
-  VF (MkOf y) => case f y of
-    Just (yh,yt) => yield yh >> pure (yield yt)
-    Nothing      => yield y  >> pure (pure ())
+  VF (MkOf y) => case breakList f Lin y of
+    Just (yh,yt) => yieldAll yh $> yieldAll yt
+    Nothing      => yieldAll y  $> pure ()
   VP y => pure (pure y)
   VM y => pure (lift y)
 
@@ -389,3 +462,27 @@ splitWith f s = F (breakWith f s) >>=
   \case P r => P r
         M y => M y
         x   => splitWith f x
+
+export
+splitAt :  Nat
+        -> Stream (Of a) m r
+        -> Stream (Of a) m (Stream (Of a) m r)
+splitAt k x = case toView x of
+  BindF (MkOf vs) z => case splitList k Lin vs of
+    Left k2     => yieldAll vs >>= \v => splitAt k2 (z v)
+    Right (h,t) => yieldAll h $> (yieldAll t >>= \v => (z v))
+  BindP val z => Bind (pure val)  (\v => splitAt k (z v))
+  BindM act z => Bind (lift act)  (\v => splitAt k (z v))
+  VF (MkOf vs) => case splitList k Lin vs of
+    Left k2     => yieldAll vs $> pure ()
+    Right (h,t) => yieldAll h $> yieldAll t
+  VP v         => pure (P v)
+  VM v         => pure (M v)
+
+export
+take : Nat -> Stream (Of a) m r -> Stream (Of a) m ()
+take n = ignore . splitAt n
+
+export
+drop : Nat -> Stream (Of a) m r -> Stream (Of a) m r
+drop n str = drain (splitAt n str) >>= id
