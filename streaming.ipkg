@@ -5,7 +5,10 @@ depends    = base       >= 0.5.1
            , sop        >= 0.5.0
            , bytestring >= 0.0.1
 
-modules    = Stream
+modules    = Data.Fold
+           , Data.List.TailRec
+
+           , Stream
            , Stream.Internal
            , Stream.File
            , Stream.Util
